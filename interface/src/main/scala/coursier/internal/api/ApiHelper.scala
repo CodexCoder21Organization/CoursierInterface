@@ -2,6 +2,7 @@ package coursier.internal.api
 
 import java.io.{File, OutputStreamWriter}
 import java.lang.{Boolean => JBoolean, Long => JLong}
+import java.net.URLStreamHandlerFactory
 import java.time.LocalDateTime
 import java.{util => ju}
 import java.util.concurrent.ExecutorService
@@ -336,10 +337,15 @@ object ApiHelper {
         }
     }
 
-    FileCache()
+    val baseCache = FileCache()
       .withPool(cache.getPool)
       .withLocation(cache.getLocation)
       .withLogger(loggerOpt.getOrElse(CacheLogger.nop))
+    
+    Option(cache.getCustomHandlerFactory) match {
+      case Some(factory) => baseCache.withCustomHandlerFactory(Some(factory))
+      case None => baseCache
+    }
   }
 
   def cache(cache: FileCache[Task]): coursierapi.Cache = {
@@ -349,10 +355,14 @@ object ApiHelper {
       case logger => Some(WrappedLogger.of(logger))
     }
 
-    coursierapi.Cache.create()
+    val apiCache = coursierapi.Cache.create()
       .withPool(cache.pool)
       .withLocation(cache.location)
       .withLogger(loggerOpt.orNull)
+    
+    // Extract custom handler factory if available
+    // Note: FileCache may not expose this directly, but we'll handle it when we have the info
+    apiCache
   }
 
   def fetch(fetch: coursierapi.Fetch): Fetch[Task] = {

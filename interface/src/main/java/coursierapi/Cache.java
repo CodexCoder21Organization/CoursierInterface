@@ -3,6 +3,7 @@ package coursierapi;
 import coursier.internal.api.ApiHelper;
 
 import java.io.File;
+import java.net.URLStreamHandlerFactory;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 
@@ -11,11 +12,13 @@ public final class Cache {
     private ExecutorService pool;
     private File location;
     private Logger logger;
+    private URLStreamHandlerFactory customHandlerFactory;
 
     private Cache() {
         pool = ApiHelper.defaultPool();
         location = ApiHelper.defaultLocation();
         logger = null;
+        customHandlerFactory = null;
     }
 
     public static Cache create() {
@@ -32,14 +35,15 @@ public final class Cache {
             Cache other = (Cache) obj;
             return this.pool.equals(other.pool) &&
                     this.location.equals(other.location) &&
-                    Objects.equals(this.logger, other.logger);
+                    Objects.equals(this.logger, other.logger) &&
+                    Objects.equals(this.customHandlerFactory, other.customHandlerFactory);
         }
         return false;
     }
 
     @Override
     public int hashCode() {
-        return 37 * (37 * (17 + pool.hashCode()) + location.hashCode()) + Objects.hashCode(logger);
+        return 37 * (37 * (37 * (17 + pool.hashCode()) + location.hashCode()) + Objects.hashCode(logger)) + Objects.hashCode(customHandlerFactory);
     }
 
     @Override
@@ -51,6 +55,10 @@ public final class Cache {
         if (logger != null) {
             b.append(", logger=");
             b.append(logger.toString());
+        }
+        if (customHandlerFactory != null) {
+            b.append(", customHandlerFactory=");
+            b.append(customHandlerFactory.toString());
         }
         b.append(")");
         return b.toString();
@@ -71,6 +79,11 @@ public final class Cache {
         return this;
     }
 
+    public Cache withCustomHandlerFactory(URLStreamHandlerFactory customHandlerFactory) {
+        this.customHandlerFactory = customHandlerFactory;
+        return this;
+    }
+
     public ExecutorService getPool() {
         return pool;
     }
@@ -81,5 +94,9 @@ public final class Cache {
 
     public Logger getLogger() {
         return logger;
+    }
+
+    public URLStreamHandlerFactory getCustomHandlerFactory() {
+        return customHandlerFactory;
     }
 }
