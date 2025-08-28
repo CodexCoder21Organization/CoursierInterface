@@ -249,6 +249,91 @@ object URLStreamHandlerFactoryTests extends TestSuite {
       servedUrls.foreach(url => println(s"  - $url"))
       println(s"✅ SUCCESS: URLStreamHandlerFactory integration is working!")
     }
+
+    test("functional custom protocol handler (POM only via publication + artifactTypes)") {
+      val exampleJarContent = createMinimalJarContent()
+
+      val trackingUrls = scala.collection.mutable.Set[String]()
+
+      val trackingFactory = new URLStreamHandlerFactory {
+        override def createURLStreamHandler(protocol: String): URLStreamHandler =
+          if (protocol == "testproto") new URLStreamHandler {
+            override protected def openConnection(url: URL): URLConnection = new URLConnection(url) {
+              override def connect(): Unit = ()
+              override def getInputStream: InputStream = {
+                trackingUrls += url.toString
+                val path = url.getPath
+                if (path.endsWith(".sha1") || path.endsWith(".md5")) {
+                  val base = if (path.endsWith(".sha1")) path.stripSuffix(".sha1") else path.stripSuffix(".md5")
+                  val bytes =
+                    if (base.contains("example-artifact-1.0.jar")) exampleJarContent
+                    else if (base.contains("example-artifact-1.0.pom")) createExamplePom().getBytes("UTF-8")
+                    else if (base.contains("maven-metadata.xml")) createMavenMetadata().getBytes("UTF-8")
+                    else throw new java.io.FileNotFoundException(s"Not found: $base")
+                  val algo = if (path.endsWith(".sha1")) "SHA-1" else "MD5"
+                  val hex = hexOf(algo, bytes)
+                  new ByteArrayInputStream(hex.getBytes("UTF-8"))
+                } else if (path.contains("example-artifact-1.0.jar"))
+                  new ByteArrayInputStream(exampleJarContent)
+                else if (path.contains("example-artifact-1.0.pom"))
+                  new ByteArrayInputStream(createExamplePom().getBytes("UTF-8"))
+                else if (path.contains("maven-metadata.xml"))
+                  new ByteArrayInputStream(createMavenMetadata().getBytes("UTF-8"))
+                else
+                  throw new java.io.FileNotFoundException(s"Not found: $path")
+              }
+              override def getContentType: String = {
+                val path = url.getPath
+                if (path.endsWith(".jar")) "application/java-archive"
+                else if (path.endsWith(".pom")) "application/xml"
+                else if (path.endsWith(".xml")) "application/xml"
+                else if (path.endsWith(".sha1") || path.endsWith(".md5")) "text/plain"
+                else "application/octet-stream"
+              }
+              override def getContentLength: Int = {
+                val path = url.getPath
+                if (path.endsWith(".sha1") || path.endsWith(".md5")) {
+                  val base = if (path.endsWith(".sha1")) path.stripSuffix(".sha1") else path.stripSuffix(".md5")
+                  val bytes =
+                    if (base.contains("example-artifact-1.0.jar")) exampleJarContent
+                    else if (base.contains("example-artifact-1.0.pom")) createExamplePom().getBytes("UTF-8")
+                    else if (base.contains("maven-metadata.xml")) createMavenMetadata().getBytes("UTF-8")
+                    else Array.emptyByteArray
+                  val algo = if (path.endsWith(".sha1")) "SHA-1" else "MD5"
+                  hexOf(algo, bytes).getBytes("UTF-8").length
+                }
+                else if (path.contains("example-artifact-1.0.jar")) exampleJarContent.length
+                else if (path.contains(".pom")) createExamplePom().getBytes("UTF-8").length
+                else if (path.contains(".xml")) createMavenMetadata().getBytes("UTF-8").length
+                else -1
+              }
+            }
+          } else null
+      }
+
+      val tmpCacheDir = java.nio.file.Files.createTempDirectory("cs-urlhandler-cache-pom")
+      val cache = Cache.create().withLocation(tmpCacheDir.toFile).withCustomHandlerFactory(trackingFactory)
+      val repo = MavenRepository.of("testproto://example.com/maven2")
+
+      val dep = Dependency.of("com.example", "example-artifact", "1.0")
+        .withPublication(new Publication("pom", "pom"))
+
+      val fetch = Fetch.create()
+        .withCache(cache)
+        .withRepositories(repo)
+        .withArtifactTypes(java.util.Collections.singleton("pom"))
+        .addDependencies(dep)
+
+      val result = fetch.fetchResult()
+      val files = result.getFiles
+      assert(files != null)
+      assert(files.size() > 0)
+      val pomFile = files.get(0)
+      assert(pomFile.getName.endsWith(".pom"))
+      assert(pomFile.length() == createExamplePom().getBytes("UTF-8").length)
+
+      assert(trackingUrls.nonEmpty)
+    }
   }
 
   // Helper method to create minimal valid JAR content
@@ -375,5 +460,20 @@ object URLStreamHandlerFactoryTests extends TestSuite {
       |    </versions>
       |  </versioning>
       |</metadata>""".stripMargin
+  }
+
+  // Helpers for checksums in tests
+  private def hexOf(algo: String, bytes: Array[Byte]): String = {
+    val md = java.security.MessageDigest.getInstance(algo)
+    val digest = md.digest(bytes)
+    val b = new StringBuilder(digest.length * 2)
+    var i = 0
+    while (i < digest.length) {
+      val v: Int = digest(i) & 0xff
+      if (v < 16) b.append('0')
+      b.append(Integer.toHexString(v))
+      i += 1
+    }
+    b.toString
   }
 }

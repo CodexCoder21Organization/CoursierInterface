@@ -396,19 +396,19 @@ object ApiHelper {
 
     val params = resolutionParams(fetch.getResolutionParams)
 
-    // temporarily creating a Resolve and and Artifacts manually,
-    // to work around missing BOM-related methods on Fetch
-    val resolve = Resolve()
+    // Build Resolve with the provided cache from the start (avoids creating a default cache)
+    val resolve = Resolve(cache0)
       .withDependencies(dependencies)
       .withBomDependencies(bomDependencies)
       .withRepositories(repositories)
-      .withCache(cache0)
       .withResolutionParams(params)
     var artifacts = Artifacts()
       .withMainArtifacts(fetch.getMainArtifacts)
       .withClassifiers(classifiers)
     if (fetch.getArtifactTypes != null)
       artifacts = artifacts.withArtifactTypes(fetch.getArtifactTypes.asScala.toSet[String].map(Type(_)))
+    // Ensure artifacts use the same cache as resolve (avoid default cache creation)
+    artifacts = artifacts.withCache(cache0)
 
     Fetch(resolve, artifacts, None)
       .withFetchCache(Option(fetch.getFetchCacheIKnowWhatImDoing))
@@ -483,31 +483,43 @@ object ApiHelper {
         fetch0.either().map(files => Fetch.Result().withExtraArtifacts(files.map((dummyArtifact, _))))
       }
 
-    // TODO Pass exception causes if any
+    // Attach original causes to API exceptions for better diagnostics
 
     either match {
       case Left(err) =>
 
         val ex = err match {
           case d: FetchError.DownloadingArtifacts =>
-            coursierapi.error.DownloadingArtifactsError.of(
+            val e = coursierapi.error.DownloadingArtifactsError.of(
               d.errors.map { case (a, e) => a.url -> e.describe }.toMap.asJava
             )
+            e.initCause(d)
+            e
           case f: FetchError =>
-            coursierapi.error.FetchError.of(f.getMessage)
+            val e = coursierapi.error.FetchError.of(f.getMessage)
+            e.initCause(f)
+            e
 
           case s: ResolutionError.Several =>
-            coursierapi.error.MultipleResolutionError.of(
+            val e = coursierapi.error.MultipleResolutionError.of(
               simpleResError(s.head),
               s.tail.map(simpleResError): _*
             )
+            e.initCause(s)
+            e
           case s: ResolutionError.Simple =>
-            simpleResError(s)
+            val e = simpleResError(s)
+            e.initCause(s)
+            e
           case r: ResolutionError =>
-            coursierapi.error.ResolutionError.of(r.getMessage)
+            val e = coursierapi.error.ResolutionError.of(r.getMessage)
+            e.initCause(r)
+            e
 
           case c: CoursierError =>
-            coursierapi.error.CoursierError.of(c.getMessage)
+            val e = coursierapi.error.CoursierError.of(c.getMessage)
+            e.initCause(c)
+            e
         }
 
         throw ex
