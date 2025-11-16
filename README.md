@@ -21,6 +21,41 @@ Beware that unlike their coursier counterparts, which are immutable, some coursi
 
 Missing features are added when they are needed. PRs adding missing features are welcome, as long as backward binary compatibility is not broken. See [development](#development) for more details about how to proceed.
 
+## Custom Fork (use-forked-coursier branch)
+
+**IMPORTANT**: The `use-forked-coursier` branch contains custom modifications to support `URLStreamHandlerFactory` via the `withCustomHandlerFactory` method in the `Cache` class. This is required for kompile-cli and other projects that need custom URL handling.
+
+### Building the Custom Version
+
+To build and publish version `2.1.30-SNAPSHOT` with the custom modifications:
+
+```bash
+# Switch to the custom branch
+git checkout use-forked-coursier
+
+# Ensure version.sbt is set correctly
+echo 'ThisBuild / version := "2.1.30-SNAPSHOT"' > version.sbt
+
+# Build with Java 21 (Proguard doesn't support Java 24+)
+export JAVA_HOME=/path/to/java21
+sbt "project interface" +publishLocal
+
+# Publish to Maven repository
+scp -P 23 -i ~/.ssh/id_rsa ~/.ivy2/local/io.get-coursier/interface/2.1.30-SNAPSHOT/* \
+    root@kotlin.directory:/root/maven/io/get-coursier/interface/2.1.30-SNAPSHOT/
+```
+
+### Key Differences from Main
+
+- Adds `withCustomHandlerFactory(URLStreamHandlerFactory)` method to `coursierapi.Cache`
+- Adds `getCustomHandlerFactory()` accessor
+- Updates `coursier.internal.api.ApiHelper` to handle the custom factory
+- Uses coursier 2.1.30 (changed from 2.1.30-test)
+
+### Why This Exists
+
+The main coursier-interface project doesn't support custom `URLStreamHandlerFactory` instances. This fork adds that capability for projects that need to customize URL handling (e.g., for custom protocol handlers or JAR URL caching).
+
 ## Development
 
 This project is built with [sbt](https://www.scala-sbt.org). If sbt is not installed on your machine, you can easily get a launcher by using [sbt-extras](https://github.com/paulp/sbt-extras). Alternatively, if a recent version of [the coursier CLI](https://get-coursier.io/docs/cli-overview) is installed on your machine, you can either do `cs install sbt`, or start sbt straightaway from the root of the coursier-interface sources with `cs launch sbt`.
