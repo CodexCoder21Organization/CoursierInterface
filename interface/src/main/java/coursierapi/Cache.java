@@ -13,12 +13,14 @@ public final class Cache {
     private File location;
     private Logger logger;
     private URLStreamHandlerFactory customHandlerFactory;
+    private java.util.Set<String> protocolsServedFresh;
 
     private Cache() {
         pool = ApiHelper.defaultPool();
         location = ApiHelper.defaultLocation();
         logger = null;
         customHandlerFactory = null;
+        protocolsServedFresh = java.util.Collections.emptySet();
     }
 
     public static Cache create() {
@@ -36,14 +38,15 @@ public final class Cache {
             return this.pool.equals(other.pool) &&
                     this.location.equals(other.location) &&
                     Objects.equals(this.logger, other.logger) &&
-                    Objects.equals(this.customHandlerFactory, other.customHandlerFactory);
+                    Objects.equals(this.customHandlerFactory, other.customHandlerFactory) &&
+                    this.protocolsServedFresh.equals(other.protocolsServedFresh);
         }
         return false;
     }
 
     @Override
     public int hashCode() {
-        return 37 * (37 * (37 * (17 + pool.hashCode()) + location.hashCode()) + Objects.hashCode(logger)) + Objects.hashCode(customHandlerFactory);
+        return 37 * (37 * (37 * (37 * (17 + pool.hashCode()) + location.hashCode()) + Objects.hashCode(logger)) + Objects.hashCode(customHandlerFactory)) + protocolsServedFresh.hashCode();
     }
 
     @Override
@@ -84,6 +87,19 @@ public final class Cache {
         return this;
     }
 
+    /**
+     * Artifacts whose URL scheme is in {@code protocols} are served "fresh" — resolved through a
+     * per-fetch cache location instead of the shared global cache. This is for custom
+     * URLStreamHandler protocols (e.g. {@code "bldbinary"}, {@code "memrepo"}) that serve MUTABLE,
+     * build-specific content: it prevents Coursier's URL-keyed cache from serving a stale
+     * workspace-built artifact and stops concurrent builds in different workspaces from clobbering
+     * each other. Remote (immutable) Maven artifacts are unaffected and keep using the shared cache.
+     */
+    public Cache withProtocolsServedFresh(java.util.Set<String> protocols) {
+        this.protocolsServedFresh = new java.util.HashSet<>(protocols);
+        return this;
+    }
+
     public ExecutorService getPool() {
         return pool;
     }
@@ -98,5 +114,9 @@ public final class Cache {
 
     public URLStreamHandlerFactory getCustomHandlerFactory() {
         return customHandlerFactory;
+    }
+
+    public java.util.Set<String> getProtocolsServedFresh() {
+        return protocolsServedFresh;
     }
 }

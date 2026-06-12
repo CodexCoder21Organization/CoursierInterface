@@ -348,6 +348,23 @@ object ApiHelper {
     }
   }
 
+  /**
+   * Like [[cache]], but if the api cache declares protocols to be served fresh
+   * (see `coursierapi.Cache.withProtocolsServedFresh`), wraps the base `FileCache` in a
+   * [[ProtocolRoutingCache]] so artifacts of those (custom-handler, mutable) protocols resolve
+   * through a per-fetch location instead of the shared global cache. Empty set ⇒ the base
+   * `FileCache` unchanged (no behaviour change for existing callers).
+   */
+  def routedCache(apiCache: coursierapi.Cache): coursier.cache.Cache[Task] = {
+    val baseCache = cache(apiCache)
+    val freshProtocols = apiCache.getProtocolsServedFresh.asScala.toSet
+    if (freshProtocols.isEmpty) baseCache
+    else {
+      val freshDir = java.nio.file.Files.createTempDirectory("coursier-fresh-").toFile
+      new ProtocolRoutingCache(baseCache, baseCache.withLocation(freshDir), freshProtocols)
+    }
+  }
+
   def cache(cache: FileCache[Task]): coursierapi.Cache = {
 
     val loggerOpt = cache.logger match {
@@ -385,7 +402,7 @@ object ApiHelper {
       .map(repository)
       .toVector
 
-    val cache0 = cache(fetch.getCache)
+    val cache0 = routedCache(fetch.getCache)
 
     val classifiers = fetch
       .getClassifiers
