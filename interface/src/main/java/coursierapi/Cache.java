@@ -93,7 +93,9 @@ public final class Cache {
      * URLStreamHandler protocols (e.g. {@code "bldbinary"}, {@code "memrepo"}) that serve MUTABLE,
      * build-specific content: it prevents Coursier's URL-keyed cache from serving a stale
      * workspace-built artifact and stops concurrent builds in different workspaces from clobbering
-     * each other. Remote (immutable) Maven artifacts are unaffected and keep using the shared cache.
+     * each other. A completed fetch materializes its returned files once under an immutable
+     * content-digest path in the ordinary cache, then removes the private per-fetch cache. Remote
+     * (immutable) Maven artifacts are unaffected and keep using the shared cache.
      */
     public Cache withProtocolsServedFresh(java.util.Set<String> protocols) {
         this.protocolsServedFresh = new java.util.HashSet<>(protocols);
