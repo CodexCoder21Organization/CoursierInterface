@@ -399,69 +399,6 @@ object URLStreamHandlerFactoryTests extends TestSuite {
       |</metadata>""".stripMargin
   }
 
-  // Helper method to create minimal valid JAR content
-  private def createMinimalJarContent(): Array[Byte] = {
-    // This creates a minimal ZIP/JAR file with just the required headers
-    // PK headers for ZIP format
-    val pkHeader = Array[Byte](0x50, 0x4B, 0x03, 0x04) // Local file header signature
-    val minVersion = Array[Byte](0x14, 0x00) // Version needed to extract (2.0)
-    val bitFlag = Array[Byte](0x00, 0x00) // General purpose bit flag
-    val compression = Array[Byte](0x00, 0x00) // Compression method (none)
-    val modTime = Array[Byte](0x00, 0x00) // File modification time
-    val modDate = Array[Byte](0x00, 0x00) // File modification date
-    val crc32 = Array[Byte](0x00, 0x00, 0x00, 0x00) // CRC-32
-    val compSize = Array[Byte](0x00, 0x00, 0x00, 0x00) // Compressed size
-    val uncompSize = Array[Byte](0x00, 0x00, 0x00, 0x00) // Uncompressed size
-    val nameLen = Array[Byte](0x09, 0x00) // File name length
-    val extraLen = Array[Byte](0x00, 0x00) // Extra field length
-    val fileName = "META-INF/".getBytes("UTF-8") // Directory entry
-    
-    // Central directory end record
-    val endSignature = Array[Byte](0x50, 0x4B, 0x05, 0x06) // End of central directory signature
-    val diskNum = Array[Byte](0x00, 0x00) // Number of this disk
-    val diskStart = Array[Byte](0x00, 0x00) // Disk where central directory starts
-    val entriesOnDisk = Array[Byte](0x00, 0x00) // Number of central directory records on this disk
-    val totalEntries = Array[Byte](0x00, 0x00) // Total number of central directory records
-    val centralDirSize = Array[Byte](0x00, 0x00, 0x00, 0x00) // Size of central directory
-    val centralDirOffset = Array[Byte](0x1E, 0x00, 0x00, 0x00) // Offset of central directory
-    val commentLen = Array[Byte](0x00, 0x00) // Comment length
-    
-    (pkHeader ++ minVersion ++ bitFlag ++ compression ++ modTime ++ modDate ++ 
-     crc32 ++ compSize ++ uncompSize ++ nameLen ++ extraLen ++ fileName ++
-     endSignature ++ diskNum ++ diskStart ++ entriesOnDisk ++ totalEntries ++
-     centralDirSize ++ centralDirOffset ++ commentLen)
-  }
-
-  // Helper method to create example POM content
-  private def createExamplePom(): String = {
-    """<?xml version="1.0" encoding="UTF-8"?>
-      |<project xmlns="http://maven.apache.org/POM/4.0.0"
-      |         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-      |         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-      |  <modelVersion>4.0.0</modelVersion>
-      |  <groupId>com.example</groupId>
-      |  <artifactId>example-artifact</artifactId>
-      |  <version>1.0</version>
-      |  <packaging>jar</packaging>
-      |</project>""".stripMargin
-  }
-
-  // Helper method to create Maven metadata
-  private def createMavenMetadata(): String = {
-    """<?xml version="1.0" encoding="UTF-8"?>
-      |<metadata>
-      |  <groupId>com.example</groupId>
-      |  <artifactId>example-artifact</artifactId>
-      |  <versioning>
-      |    <latest>1.0</latest>
-      |    <release>1.0</release>
-      |    <versions>
-      |      <version>1.0</version>
-      |    </versions>
-      |  </versioning>
-      |</metadata>""".stripMargin
-  }
-
   // Helpers for checksums in tests
   private def hexOf(algo: String, bytes: Array[Byte]): String = {
     val md = java.security.MessageDigest.getInstance(algo)

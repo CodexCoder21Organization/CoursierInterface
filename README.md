@@ -25,24 +25,29 @@ Missing features are added when they are needed. PRs adding missing features are
 
 **IMPORTANT**: The `use-forked-coursier` branch contains custom modifications to support `URLStreamHandlerFactory` via the `withCustomHandlerFactory` method in the `Cache` class. This is required for kompile-cli and other projects that need custom URL handling.
 
-### Building the Custom Version
+### Building and Testing the Custom Version
 
-To build and publish version `2.1.30-SNAPSHOT` with the custom modifications:
+The fork resolves its patched Coursier artifacts from
+[`kotlin.directory`](https://kotlin.directory). Run a targeted test with:
+
+```bash
+coursier launch sbt -- "interface/testOnly coursierapi.FreshProtocolCacheCleanupTests"
+```
+
+To build and publish the custom modifications:
 
 ```bash
 # Switch to the custom branch
 git checkout use-forked-coursier
-
-# Ensure version.sbt is set correctly
-echo 'ThisBuild / version := "2.1.30-SNAPSHOT"' > version.sbt
 
 # Build with Java 21 (Proguard doesn't support Java 24+)
 export JAVA_HOME=/path/to/java21
 sbt "project interface" +publishLocal
 
 # Publish to Maven repository
-scp -P 23 -i ~/.ssh/id_rsa ~/.ivy2/local/io.get-coursier/interface/2.1.30-SNAPSHOT/* \
-    root@kotlin.directory:/root/maven/io/get-coursier/interface/2.1.30-SNAPSHOT/
+VERSION=$(sed -n 's/.*version := "\([^"]*\)".*/\1/p' version.sbt)
+scp -P 23 -i ~/.ssh/id_rsa ~/.ivy2/local/io.get-coursier/interface/$VERSION/* \
+    root@kotlin.directory:/root/maven/io/get-coursier/interface/$VERSION/
 ```
 
 ### Key Differences from Main
@@ -51,6 +56,9 @@ scp -P 23 -i ~/.ssh/id_rsa ~/.ivy2/local/io.get-coursier/interface/2.1.30-SNAPSH
 - Adds `getCustomHandlerFactory()` accessor
 - Updates `coursier.internal.api.ApiHelper` to handle the custom factory
 - Uses coursier 2.1.30 (changed from 2.1.30-test)
+- Routes mutable custom protocols through a private cache for each fetch, publishes returned files
+  once under an immutable content digest in the ordinary cache, and removes the private cache on
+  both successful and failed fetches
 
 ### Why This Exists
 

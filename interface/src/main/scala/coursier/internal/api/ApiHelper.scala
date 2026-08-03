@@ -1,11 +1,13 @@
 package coursier.internal.api
 
-import java.io.{File, OutputStreamWriter}
+import java.io.{File, FileOutputStream, OutputStreamWriter}
 import java.lang.{Boolean => JBoolean, Long => JLong}
 import java.net.URLStreamHandlerFactory
+import java.nio.file.{Files, StandardCopyOption}
+import java.security.MessageDigest
 import java.time.LocalDateTime
 import java.{util => ju}
-import java.util.concurrent.ExecutorService
+import java.util.concurrent.{ConcurrentHashMap, ExecutorService}
 import coursier._
 import coursierapi.{Credentials, Logger, SimpleLogger}
 import coursier.cache.loggers.RefreshLogger
@@ -23,6 +25,11 @@ import scala.collection.JavaConverters._
 object ApiHelper {
 
   private[this] final case class ApiRepo(repo: Repository) extends coursierapi.Repository
+  private[this] val freshResultLocks = new ConcurrentHashMap[String, Object]()
+  private[this] final case class RoutedCacheLease(
+    cache: coursier.cache.Cache[Task],
+    freshDirectory: Option[File]
+  )
 
   def defaultRepositories(): Array[coursierapi.Repository] =
     Resolve.defaultRepositories
@@ -355,13 +362,16 @@ object ApiHelper {
    * through a per-fetch location instead of the shared global cache. Empty set ⇒ the base
    * `FileCache` unchanged (no behaviour change for existing callers).
    */
-  def routedCache(apiCache: coursierapi.Cache): coursier.cache.Cache[Task] = {
+  private def routedCacheLease(apiCache: coursierapi.Cache): RoutedCacheLease = {
     val baseCache = cache(apiCache)
     val freshProtocols = apiCache.getProtocolsServedFresh.asScala.toSet
-    if (freshProtocols.isEmpty) baseCache
+    if (freshProtocols.isEmpty) RoutedCacheLease(baseCache, None)
     else {
       val freshDir = java.nio.file.Files.createTempDirectory("coursier-fresh-").toFile
-      new ProtocolRoutingCache(baseCache, baseCache.withLocation(freshDir), freshProtocols)
+      RoutedCacheLease(
+        new ProtocolRoutingCache(baseCache, baseCache.withLocation(freshDir), freshProtocols),
+        Some(freshDir)
+      )
     }
   }
 
@@ -382,7 +392,10 @@ object ApiHelper {
     apiCache
   }
 
-  def fetch(fetch: coursierapi.Fetch): Fetch[Task] = {
+  private def fetchWithCache(
+    fetch: coursierapi.Fetch,
+    cache0: coursier.cache.Cache[Task]
+  ): Fetch[Task] = {
 
     val dependencies = fetch
       .getDependencies
@@ -401,8 +414,6 @@ object ApiHelper {
       .asScala
       .map(repository)
       .toVector
-
-    val cache0 = routedCache(fetch.getCache)
 
     val classifiers = fetch
       .getClassifiers
@@ -489,74 +500,197 @@ object ApiHelper {
       .withOptional(artifact.isOptional)
       .withAuthentication(Option(artifact.getCredentials).map(credentials))
 
+  private def sha256(file: File): String = {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val input = Files.newInputStream(file.toPath)
+    try {
+      val buffer = new Array[Byte](64 * 1024)
+      var read = input.read(buffer)
+      while (read >= 0) {
+        if (read > 0)
+          digest.update(buffer, 0, read)
+        read = input.read(buffer)
+      }
+    }
+    finally input.close()
+    digest.digest().map(b => f"${b & 0xff}%02x").mkString
+  }
+
+  /**
+   * A fresh-protocol fetch must not return a file inside its private cache: that directory is
+   * recycled as soon as the fetch finishes. Publish each returned file under a content digest in
+   * the caller's ordinary cache, so repeated fetches of the same workspace artifact share one
+   * immutable copy while distinct mutable revisions cannot collide.
+   */
+  private def materializeFreshResult(
+    apiCache: coursierapi.Cache,
+    freshDirectory: Option[File],
+    file: File
+  ): File = freshDirectory match {
+    case None => file
+    case Some(fresh) =>
+      val freshPath = fresh.toPath.toAbsolutePath.normalize()
+      val filePath = file.toPath.toAbsolutePath.normalize()
+      if (!filePath.startsWith(freshPath))
+        file
+      else {
+        if (!file.isFile)
+          throw new java.io.IOException(
+            s"Fresh-protocol fetch returned ${file.getAbsolutePath}, but it is not a regular file"
+          )
+        val digest = sha256(file)
+        val targetDirectory =
+          new File(apiCache.getLocation, s"served-fresh-results/v1/$digest")
+        Files.createDirectories(targetDirectory.toPath)
+        val target = new File(targetDirectory, file.getName)
+        val lockFile = new File(targetDirectory, ".publish.lock")
+        val processLock = freshResultLocks.computeIfAbsent(
+          lockFile.getCanonicalPath,
+          _ => new Object()
+        )
+        processLock.synchronized {
+          val channel = new FileOutputStream(lockFile, true).getChannel
+          try {
+            val lock = channel.lock()
+            try {
+              val targetIsComplete =
+                target.isFile && target.length() == file.length() && sha256(target) == digest
+              if (!targetIsComplete) {
+                val staging = Files.createTempFile(
+                  targetDirectory.toPath,
+                  s".${file.getName}-",
+                  ".tmp"
+                )
+                try {
+                  Files.copy(file.toPath, staging, StandardCopyOption.REPLACE_EXISTING)
+                  try {
+                    Files.move(
+                      staging,
+                      target.toPath,
+                      StandardCopyOption.ATOMIC_MOVE,
+                      StandardCopyOption.REPLACE_EXISTING
+                    )
+                  }
+                  catch {
+                    case _: java.nio.file.AtomicMoveNotSupportedException =>
+                      Files.move(staging, target.toPath, StandardCopyOption.REPLACE_EXISTING)
+                  }
+                }
+                finally Files.deleteIfExists(staging)
+              }
+            }
+            finally lock.release()
+          }
+          finally channel.close()
+        }
+        target
+      }
+  }
+
+  private def deleteTree(root: File): Unit = {
+    if (!root.exists()) return
+    val paths = Files.walk(root.toPath)
+    try {
+      paths
+        .sorted(java.util.Comparator.reverseOrder())
+        .forEach(path => Files.deleteIfExists(path))
+    }
+    finally paths.close()
+  }
+
   def doFetch(apiFetch: coursierapi.Fetch): coursierapi.FetchResult = {
 
-    val fetch0 = fetch(apiFetch)
-    val either =
-      if (apiFetch.getFetchCacheIKnowWhatImDoing == null)
-        fetch0.eitherResult()
-      else {
-        val dummyArtifact = Artifact("", Map(), Map(), changing = false, optional = false, None)
-        fetch0.either().map(files => Fetch.Result().withExtraArtifacts(files.map((dummyArtifact, _))))
+    val routed = routedCacheLease(apiFetch.getCache)
+    var primaryFailure: Throwable = null
+    try {
+      val fetch0 = fetchWithCache(apiFetch, routed.cache)
+      val either =
+        if (apiFetch.getFetchCacheIKnowWhatImDoing == null)
+          fetch0.eitherResult()
+        else {
+          val dummyArtifact = Artifact("", Map(), Map(), changing = false, optional = false, None)
+          fetch0.either().map(files => Fetch.Result().withExtraArtifacts(files.map((dummyArtifact, _))))
+        }
+
+      // Attach original causes to API exceptions for better diagnostics
+
+      either match {
+        case Left(err) =>
+
+          val ex = err match {
+            case d: FetchError.DownloadingArtifacts =>
+              val e = coursierapi.error.DownloadingArtifactsError.of(
+                d.errors.map { case (a, e) => a.url -> e.describe }.toMap.asJava
+              )
+              e.initCause(d)
+              e
+            case f: FetchError =>
+              val e = coursierapi.error.FetchError.of(f.getMessage)
+              e.initCause(f)
+              e
+
+            case s: ResolutionError.Several =>
+              val e = coursierapi.error.MultipleResolutionError.of(
+                simpleResError(s.head),
+                s.tail.map(simpleResError): _*
+              )
+              e.initCause(s)
+              e
+            case s: ResolutionError.Simple =>
+              val e = simpleResError(s)
+              e.initCause(s)
+              e
+            case r: ResolutionError =>
+              val e = coursierapi.error.ResolutionError.of(r.getMessage)
+              e.initCause(r)
+              e
+
+            case c: CoursierError =>
+              val e = coursierapi.error.CoursierError.of(c.getMessage)
+              e.initCause(c)
+              e
+          }
+
+          throw ex
+
+        case Right(result) =>
+          val artifactFiles = new ju.ArrayList[ju.Map.Entry[coursierapi.Artifact, File]]
+          for ((a, f) <- result.artifacts) {
+            val a0 = artifact(a)
+            val materialized = materializeFreshResult(
+              apiFetch.getCache,
+              routed.freshDirectory,
+              f
+            )
+            val ent = new ju.AbstractMap.SimpleEntry(a0, materialized)
+            artifactFiles.add(ent)
+          }
+
+          val deps = new ju.ArrayList[coursierapi.Dependency]
+          result
+            .resolution
+            .orderedDependencies
+            .map(dependency)
+            .foreach(deps.add)
+
+          coursierapi.FetchResult.of(artifactFiles, deps)
       }
-
-    // Attach original causes to API exceptions for better diagnostics
-
-    either match {
-      case Left(err) =>
-
-        val ex = err match {
-          case d: FetchError.DownloadingArtifacts =>
-            val e = coursierapi.error.DownloadingArtifactsError.of(
-              d.errors.map { case (a, e) => a.url -> e.describe }.toMap.asJava
-            )
-            e.initCause(d)
-            e
-          case f: FetchError =>
-            val e = coursierapi.error.FetchError.of(f.getMessage)
-            e.initCause(f)
-            e
-
-          case s: ResolutionError.Several =>
-            val e = coursierapi.error.MultipleResolutionError.of(
-              simpleResError(s.head),
-              s.tail.map(simpleResError): _*
-            )
-            e.initCause(s)
-            e
-          case s: ResolutionError.Simple =>
-            val e = simpleResError(s)
-            e.initCause(s)
-            e
-          case r: ResolutionError =>
-            val e = coursierapi.error.ResolutionError.of(r.getMessage)
-            e.initCause(r)
-            e
-
-          case c: CoursierError =>
-            val e = coursierapi.error.CoursierError.of(c.getMessage)
-            e.initCause(c)
-            e
+    }
+    catch {
+      case failure: Throwable =>
+        primaryFailure = failure
+        throw failure
+    }
+    finally {
+      routed.freshDirectory.foreach { directory =>
+        try deleteTree(directory)
+        catch {
+          case cleanupFailure: Throwable =>
+            if (primaryFailure == null)
+              throw cleanupFailure
+            primaryFailure.addSuppressed(cleanupFailure)
         }
-
-        throw ex
-
-      case Right(result) =>
-        val artifactFiles = new ju.ArrayList[ju.Map.Entry[coursierapi.Artifact, File]]
-        for ((a, f) <- result.artifacts) {
-          val a0 = artifact(a)
-          val ent = new ju.AbstractMap.SimpleEntry(a0, f)
-          artifactFiles.add(ent)
-        }
-
-        val deps = new ju.ArrayList[coursierapi.Dependency]
-        result
-          .resolution
-          .orderedDependencies
-          .map(dependency)
-          .foreach(deps.add)
-
-        coursierapi.FetchResult.of(artifactFiles, deps)
+      }
     }
   }
 

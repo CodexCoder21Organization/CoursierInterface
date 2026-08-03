@@ -195,7 +195,10 @@ lazy val interface = project
 
     Settings.shared,
     Settings.mima(),
-    resolvers += Resolver.mavenLocal,
+    resolvers ++= Seq(
+      Resolver.mavenLocal,
+      "kotlin.directory" at "https://kotlin.directory"
+    ),
     libraryDependencies ++= Seq(
       "io.get-coursier" %% "coursier" % "2.1.30",
       "io.get-coursier" %% "coursier-jvm" % "2.1.30",
