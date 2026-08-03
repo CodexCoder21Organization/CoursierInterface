@@ -25,7 +25,10 @@ import scala.collection.JavaConverters._
 object ApiHelper {
 
   private[this] final case class ApiRepo(repo: Repository) extends coursierapi.Repository
-  private[this] val freshResultLocks = new ConcurrentHashMap[String, Object]()
+  private[this] final class FreshResultLock(var users: Int) {
+    val monitor = new Object()
+  }
+  private[this] val freshResultLocks = new ConcurrentHashMap[String, FreshResultLock]()
   private[this] final case class RoutedCacheLease(
     cache: coursier.cache.Cache[Task],
     freshDirectory: Option[File]
@@ -516,6 +519,30 @@ object ApiHelper {
     digest.digest().map(b => f"${b & 0xff}%02x").mkString
   }
 
+  private def withFreshResultLock[T](key: String)(body: => T): T = {
+    val processLock = freshResultLocks.compute(
+      key,
+      (_, existing) => {
+        if (existing == null)
+          new FreshResultLock(1)
+        else {
+          existing.users += 1
+          existing
+        }
+      }
+    )
+    try processLock.monitor.synchronized(body)
+    finally {
+      freshResultLocks.computeIfPresent(
+        key,
+        (_, existing) => {
+          existing.users -= 1
+          if (existing.users == 0) null else existing
+        }
+      )
+    }
+  }
+
   /**
    * A fresh-protocol fetch must not return a file inside its private cache: that directory is
    * recycled as soon as the fetch finishes. Publish each returned file under a content digest in
@@ -544,11 +571,7 @@ object ApiHelper {
         Files.createDirectories(targetDirectory.toPath)
         val target = new File(targetDirectory, file.getName)
         val lockFile = new File(targetDirectory, ".publish.lock")
-        val processLock = freshResultLocks.computeIfAbsent(
-          lockFile.getCanonicalPath,
-          _ => new Object()
-        )
-        processLock.synchronized {
+        withFreshResultLock(lockFile.getCanonicalPath) {
           val channel = new FileOutputStream(lockFile, true).getChannel
           try {
             val lock = channel.lock()
